@@ -1,0 +1,464 @@
+---
+title: "Does binning your trash reduce rat sightings? Evaluating NYC's new containerization policy using the generalized linear model framework"
+author: "Stanley Dai"
+date: "2025-03-17"
+output: 
+  html_document:
+    self_contained: true
+    theme: sandstone
+    toc: yes
+    toc_depth: 2
+    number_sections: yes
+    toc_float:
+      collapsed: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE , comment = NA, message = FALSE, warning = FALSE)
+```
+
+# Abstract
+
+New York City is famous for many things, not the least of which is its staggering rat population. In 2023, the city appointed its first-ever "rat czar" to address this public health issue, coordinating with city agencies to implement rat mitigation strategies. A key policy introduced was trash containerization, requiring all residents and businesses to use rat-proof containers for waste disposal, replacing the previous method of leaving garbage in plastic bags on sidewalks. This study uses a zero-inflated negative binomial to to analyze 311 complaint data (44,908 weekly observations from 206 zip codes), incorporating a policy effect, time-fixed effects, and location-based random effects. <span style="background-color: #FFFACD;">**Results indicate that the policy led to a statistically significant 23% decrease in rat sighting reports.**</span> However, in designated rat mitigation zones — neighborhoods with historically high rat activity — the policy effect was not significant. Model diagnostics highlight limitations, including potential temporal autocorrelation and the reliance on reported sightings rather than direct rat counts. Despite these caveats, our findings suggest that containerization successfully reduced rat reports, potentially serving as a proxy for a decrease in the actual rat population.
+
+# Introduction
+
+No one knows for sure, a recent study estimated that there are approximately [3,000,000 rats in New York City](https://mandmpestcontrol.com/pests/rats/3-million-rats-in-nyc/#:~:text=There%20Are%203%20Million%20Rats,a%2050%25%20Increase%20Since%202010&text=MMPC%20conducted%20a%20statistical%20analysis,rats%20in%20New%20York%20City.). In many studies conducted by [pest control companies](https://www.terminix.com/rodents/top-rodent-cities/) or research ecologists, New York consistently ranks in the top three most rat-infested cities in America (Aueurbach 2014). Rats, of course, are not just unpleasant to be around - they represent a possible public health problem, having a [long history as vectors of diseases](https://www.orkin.com/pests/rodents/rats/diseases-that-are-spread-or-carried-by-rats), from salmonella to plague. 
+
+To combat this issue, in 2023 New York City hired Kathleen Corradi its first ever “rat czar,” a government official whose main responsibility was to “reduce the population, increase cleanliness, and prevent pestilence (https://www.nytimes.com/2023/04/12/nyregion/rat-czar-kathleen-corradi.html).” Corradi coordinates with many city offices, such as the Department of Sanitation, to design and implement policies to aid in this mission.
+
+<span style="background-color: #FFFACD;">**One such policy is a new [trash containerization policy](https://www.nyc.gov/site/dsny/collection/containerization/nyc-bin-faq.page), which requires that New Yorkers place their trash in official on-street, rat-proof containers, which are then collected by city sanitation workers.**</span>
+ Prior to this policy, New Yorkers were not required to place their trash in official containers; in fact, the de-facto waste disposal solution was to leave trash out in large plastic bags on the sidewalk for city employees to hoist onto the back of garbage trucks. Plastic is too flimsy a material to keep rodents out, and so the Corradi and the DOS identified this change as a major tool in the city’s fight against the rats. 
+
+```{r, echo=FALSE, out.width="80%", fig.align="center"}
+knitr::include_graphics("/Users/stanley/Downloads/nyctrash.png")
+
+```
+
+\newline
+On November 12th, 2024, New York officially implemented the containerization policy city-wide, across all zip codes. Family homes, commercial buildings, and buildings with more than 9 residents were now required to containerize their trash, or else pay increasing fines. 
+
+```{r, echo=FALSE, out.width="80%", fig.align="center"}
+knitr::include_graphics("/Users/stanley/Downloads/containers.png")
+
+```
+
+\newline
+
+<span style="background-color: #FFFACD;">**The primary purpose of this paper is to use the generalized linear framework to investigate if the containerization policy had any effect on the count of rats spotted in New York City.**</span>
+
+Beyond estimating the overall effect of the policy, we also examine whether the effect is stronger in [rat mitigation zones](https://rules.cityofnewyork.us/rule/rat-mitigation-zones/#), which are neighborhoods that the city has identified as areas with high levels of rat activity. These neighborhoods have been specifically targeted by the city for many years, raising the question if the containerization policy had a different effect in these zones compared with the rest of the city.
+
+# Dataset 
+
+NYC 311 is a phone hotline that provides residents access to non-emergency city services and information about city government programs. <span style="background-color: #FFFACD;">**As such, 311 accepts and records complaints of rat sightings from NYC residents. The data for these sightings are publicly available on the NYC Open Data platform.**</span> Reports of rat sightings are individually recorded, along with additional information such as the location where the rat was spotted or the responding agency. Key fields include date, time, location (borough, zip code), complaint type, and responding agency. Data on rat sightings are available from 2010 to present and are updated daily. As of March 12th, 2025, there are 262,144 records of rat sightings in New York City. The data is available [here](https://data.cityofnewyork.us/Social-Services/Rat-Sightings/3q43-55fe/about_data). 
+
+## Why is GLM appropriate?
+
+<span style="background-color: #FFFACD;">**Because we are interested in the effect of the containerization policy on the number of rats spotted over time, our research question lends itself to Poisson or negative binomial regression, as our outcome of interest is a count variable.**</span> Count data is often modeled using the Poisson distribution, although it is often modeled with negative binomial in order to account for overdispersion.
+
+The four assumptions of such a model, which we will touch on throughout our report, are: 
+
+- The response variable is a count per unit, described by a Poisson distribution.
+- The observations must be independent of one another.
+- The mean must be equal to its variance for a Poisson random variable. However, if variance is greater than the mean, overdispersion exists and one may choose to fit a negative binomial model. 
+- The log of the mean rate must be a linear function of x. 
+
+# Exploratory data analysis
+
+```{r}
+
+library(dplyr)
+library(tidyverse)
+library(lubridate)
+library(forecast)
+library(ggplot2)
+library(glmmTMB)
+library(clubSandwich)
+library(sjPlot)
+library(sjmisc)
+library(sjlabelled)
+library(kableExtra)
+
+#import csv 
+rats <- read.csv("/Users/stanley/Downloads/rats.csv")
+rats$Created.Date <- as.Date(rats$Created.Date, format="%m/%d/%Y %I:%M:%S %p")
+
+
+rats2 <- rats %>%
+  mutate(Date = Created.Date,
+         Zip = as.factor(Incident.Zip))
+
+# colSums(rats == "" | is.na(rats))
+
+rats3 <- rats2 %>%
+  filter(Zip != "",
+         nchar(as.character(Zip)) == 5 | is.na(Zip))
+
+rats3$Zip <- droplevels(rats3$Zip)
+
+
+```
+
+The dataset consists of <span style="background-color: #FFFACD;">**262,144**</span> records of rat sightings in New York City from 2010 to 2025, or <span style="background-color: #FFFACD;">**793**</span> weeks. Of these, 331 records are missing a valid zipcode, and no one is missing a date. The data covers <span style="background-color: #FFFACD;">**206 out of 324**</span> total zipcodes across all five boroughs of New York City. 
+
+Because our outcome is a count, we must specify a time interval for analysis. A natural time interval is a week, as a daily count will likely be too sparse once we aggregate the data to the week level per zip code. We do this because we are interested in adding zip code as a random effect in our model.
+
+## Variable creation
+
+<span style="background-color: #FFFACD;">**To assess the impact of the containerization policy, we create a dummy variable: 1 if after November 12, 2024, and 0 if before November 12th, 2024.**</span>
+
+We also explicitly add zero counts to our dataset per week per zipcode, ensuring that data points with no reported sightings are still included in the analysis. This step is necessary for an unbiased assessment of the policy's impact and will require us to consider zero-inflated models down the line. 
+
+Below is a distribution of our chosen outcome variable, which motivates the usage of zero-inflated models as well as demonstrates a Poisson-like distribution, meeting one of our core assumptions. 
+
+```{r}
+
+weekly_zip_counts <- rats3 %>%
+  mutate(Week = floor_date(Date, "week")) %>%
+  mutate(Month = month(Date),
+         Year = year(Date)) %>% 
+  group_by(Week, Zip, Month, Year) %>%
+  summarize(
+    count = n(),
+    .groups = 'drop'
+  ) %>%
+  filter(Year >= 2010) %>%  
+  mutate(policy = ifelse(Week >= ymd("2024-11-12"), 1, 0))  
+
+# n_distinct(weekly_zip_counts$Week)
+
+all_weeks <- unique(weekly_zip_counts$Week)
+all_zips <- unique(weekly_zip_counts$Zip)
+
+complete_grid <- expand_grid(
+  Week = all_weeks,
+  Zip = all_zips
+) %>%
+  mutate(
+    Month = month(Week),
+    Year = year(Week),
+    policy = ifelse(Week >= ymd("2024-11-12"), 1, 0)
+  )
+
+complete_weekly_zip_counts <- complete_grid %>%
+  left_join(
+    weekly_zip_counts %>% select(Week, Zip, Month, Year, policy, count), 
+    by = c("Week", "Zip", "Month", "Year", "policy")
+  ) %>%
+  mutate(count = ifelse(is.na(count), 0, count))  # Replace NA with 0
+
+complete_weekly_zip_counts <- complete_weekly_zip_counts %>%
+  filter(Year >= 2010)  
+
+
+
+```
+
+
+```{r}
+ggplot(complete_weekly_zip_counts, aes(x = count)) +
+  geom_histogram(binwidth = 1, fill = "#CDE5D9", color = "black") +
+  scale_x_continuous(breaks = seq(0, max(complete_weekly_zip_counts$count), by = 5)) +
+  theme_minimal() +
+  labs(title = "Figure 1: Distribution of Weekly Rat Counts by Zipcode",
+       x = "Count", y = "Frequency")
+```
+
+\newline
+
+## Investigating seasonal patterns 
+
+It is likely that rat reportings exhibit seasonal patterns, with fluctuations both with a year and over many years. For example, in warmer weather, rats and people are more active, leading to more sightings; and conversely, in colder weather, perhaps rats are less likely to be active, leading to fewer reports. Furthermore, there may be variations from year to year due to factors like policy shifts, changes in reporting behavior, or changes in the environment. 
+
+To determine whether we need to add time fixed effects into our model, we must examine the seasonality of our count data. The figure below decomposes the time-related trends in our data.
+
+```{r}
+weekly_rat_counts <- rats3 %>%
+  mutate(Week = floor_date(Date, "week")) %>%  
+  mutate(Month = month(Week),
+         Year = year(Week)) %>%
+  group_by(Week, Month, Year) %>%
+  summarize(
+    count = n(),
+    .groups = 'drop'
+  ) %>%  
+  filter(Year >= 2010) %>% 
+  mutate(policy = ifelse(Week >= ymd("2024-11-12"), 1, 0))
+
+rats_ts2 <- ts(weekly_rat_counts$count, start = c(year(min(weekly_rat_counts$Week))), 
+              frequency = 52) 
+
+decomp <- stl(rats_ts2, s.window = "periodic")
+plot(decomp)
+title("Figure 2: Visualizing Time Trends of Rat Report Data")
+
+```
+\newline 
+
+<span style="background-color: #FFFACD;">**The plot above confirms our suspicions that there are strong seasonal patterns to our data as well as an overall upwards trend. We will include a month fixed effect and a year fixed effect. **</span>
+
+A key consideration in defining month fixed effects is how we assign months to each observation. Since our data is aggregated at the weekly level, we define month based on the first day of the week. This avoids situations where a single week spans multiple months, which weakens the interpretability of the month fixed effects. 
+
+We also see that there is a sharp leap in the trend in 2021 that flattens out for the remaining years of data. This jump coincides with the COVID-19 lockdown, suggesting a structural break, perhaps due to changes in human activity, rat behavior, or reporting patterns to 311. Given this external shock, we focus on data closer to the implementation of the containerization policy, as older data may distort our yearly trend estimates. 
+
+Focusing on data after 2021 results in <span style="background-color: #FFFACD;">**44,908**</span> observations. Of these observations, <span style="background-color: #FFFACD;">**3,296**</span> occur after the implementation of the policy. Interestingly, fifty percent of all our data come from the last four years, despite the reporting period covering the last 15 years. 
+
+For robustness, we conduced an additional sensitivity analysis; models run on the entire dataset performed significantly worse by AIC, confirming our suspicion that including earlier years would weaken the model fit. 
+
+# Fitting the model
+
+## Model components
+
+Generally, a Poisson or negative binomial model would contain these components:
+
+**1. Systematic component**
+\[
+\eta_{it} = \beta_0 + \beta_1 \text{Policy}_{it} + \text{Month}_t + \text{Year}_t + u_i
+\]  
+where:  
+- \( \beta_0 \) is the intercept,  
+- \( \beta_1 \) is the coefficient for the policy dummy,
+- \( \text{Month}_t \) represents month fixed effects,  
+- \( \text{Year}_t \) represents year fixed effects,  
+- \( u_i \) is a random effect for ZIP code. 
+
+We are interested in adding a random effect for ZIP code. Given that we have over two hundred ZIP codes in our data, we are not interested in modelling specific ZIP code fixed effects. Instead, a random intercept for ZIP allows us to account for unobserved spatial factors while still estimating the overall effect of the policy across the city.
+
+**2. Link function**
+\[
+\log(E(Y_{it})) = \eta_{it}
+\]  
+This ensures that the predicted counts remain positive and that effects are multiplicative on the original count scale.  
+
+To interpret the coefficient for policy, we can employ the **incidence rate ratio (IRR)**, which represents the multiplicative effect of the policy on the expected count, and is given by:
+
+\[
+IRR = e^{\beta_1}
+\]
+
+where \(\beta_1\) is the estimated coefficient for the policy variable. If \(\beta_1 > 0\), the expected count increases; if \(\beta_1 < 0\), the expected count decreases.
+
+
+**3. Random component**
+\[
+Y_{it} \sim \text{Poisson}(\lambda_{it})
+\]  
+where \( \lambda_{it} \) is the expected count of rat sightings for zip code \( i \) at time \( t \).  
+
+
+In a Negative Binomial model, the variance is given by:
+
+\[
+\text{Var}(Y) = \mu + \alpha \mu
+\]
+
+where \(\mu\) is the mean and \(\alpha\) is the dispersion parameter, allowing for overdispersion when \(\text{Var}(Y) > E(Y)\).
+
+## Choosing a model
+
+There are multiple considerations before choosing a final model. We begin by fitting a Poisson model, testing for overdispersion. We check for overdispersion using the Pearson chi-squared statistic, calculated as:
+
+\[
+\phi = \frac{1}{n - p} \sum \frac{(Y_i - \hat{\mu}_i)^2}{\hat{\mu}_i}
+\]
+
+where:
+
+- \( Y_i \) is the observed count,
+- \( \hat{\mu}_i \) is the predicted mean from the Poisson model,
+- \( n \) is the number of observations,
+- \( p \) is the number of estimated parameters.
+
+Given we observe mild overdispersion (\(\phi\) = 1.5), we decide to select a negative binomial to correct for overdispersion. 
+
+There are theoretical reasons why one may choose a zero-inflated model as well - for example, one may suspect that the policy increases the number of zero reportings through a different process than reducing rat sightings. Furthermore, we see in Figure 1 that there are more zero's than one would expect for such a distribution of our outcome variable. Although the gains in model fit through AIC are negligible once we run all variations of our model, we will choose a zero-inflated negative binomial model as it is the best model fit of all four models tested and most theoretically justifiable. 
+
+See table below for a grid of model fit statistics using AIC as the criteria.
+
+```{r}
+
+complete_weekly_zip_counts_pc <- complete_weekly_zip_counts %>%
+  filter(Year >= 2021)
+
+model_poisson_pc <- glmmTMB(count ~ policy + factor(Month) + factor(Year) + (1 | Zip),
+                          family = poisson, data = complete_weekly_zip_counts_pc)
+
+model_poisson_pc_zi <- glmmTMB(count ~ policy + factor(Month) + factor(Year) + (1 | Zip),
+                          ziformula = ~ policy + factor(Year),
+                          family = poisson, data = complete_weekly_zip_counts_pc)
+
+poisson_dispersion <- sum(residuals(model_poisson_pc, type = "pearson")^2) / df.residual(model_poisson_pc)
+model_poisson_pc_zi_disp <- sum(residuals(model_poisson_pc_zi, type = "pearson")^2) / df.residual(model_poisson_pc_zi)
+
+model_nb_pc <- glmmTMB(count ~ policy + factor(Month) + factor(Year) + (1 | Zip),
+                          family = nbinom1, data = complete_weekly_zip_counts_pc)
+
+model_nb_pc_zi <- glmmTMB(count ~ policy + factor(Month) + factor(Year) + (1 | Zip),
+                          ziformula = ~ policy + factor(Year),
+                          family = nbinom1, data = complete_weekly_zip_counts_pc)
+
+
+aic_values_2x2 <- data.frame(
+  `Poisson (no zero inflation)` = c(AIC(model_poisson_pc), AIC(model_poisson_pc_zi)),
+  `Negative Binomial (no zero inflation)` = c(AIC(model_nb_pc), AIC(model_nb_pc_zi))
+)
+
+
+rownames(aic_values_2x2) <- c("No Zero Inflation", "With Zero Inflation")
+
+kable(aic_values_2x2, col.names = c("Poisson", "Negative Binomial"))
+
+```
+
+\newline
+
+<span style="background-color: #FFFACD;">**The final model is a zero-inflated negative binomial, which fits count of rats per zip code on policy, time fixed effects, and a location based random effect.**</span>
+The final model is a zero-inflated negative binomial, which fits count of rats per zip code on policy, time fixed effects, and a location based random effect.
+
+# Results
+
+
+```{r, fig.align='center'}
+tab_model(model_nb_pc_zi, show.zeroinf = FALSE, CSS = list(css.table = "margin-left: auto; margin-right: auto;"))
+
+```
+
+## Interpretation
+
+Note - the table above does not show coefficients, but rather, IRR's for ease of interpretability. 
+
+**Fixed Effects**
+
+- Our intercept estimate is <span style="background-color: #FFFACD;">**0.51**</span>, which represents the expected rat count for a reference month (January) in the baseline year (2021) before the policy intervention.
+
+- Policy Effect
+  - <span style="background-color: #FFFACD;">**After the policy was implemented, rat counts decreased by 23% (IRR = 0.77**)</span>, holding all things equal. This effect is statistically significant (p < 0.001).
+- Seasonal Effects
+  - As expected, many months show significantly positive coefficients, suggesting that the month does have an impact on the count of rats, when compared to January. You can see how this effect increases through the warmer months before decreasing in December. 
+- Year Effect
+  - While there are year effects on certain years, not all years are significant or large. Interestingly, however, in 2025, rat counts had increased by 20% compared to 2021 (<span style="background-color: #FFFACD;">**IRR = 1.20**</span>), despite the fact that the policy went into effect in late 2024.
+  
+**Random Effect**
+
+- Between-ZIP code variance is <span style="background-color: #FFFACD;">**4.61**</span>, indicating significant variation in rat counts across different ZIP codes.
+- Intraclass correlation (ICC) is <span style="background-color: #FFFACD;">**0.93**</span>, suggesting that 93% of the variation in rat counts is explained by ZIP code-level differences, justifying the inclusion of ZIP-level random effects.
+
+## Rat mitigation zones
+
+A secondary question of interest is whether we observe an effect for zip codes specifically in the rat mitigation zones. The rat mitigation zone consists of **11** zip codes in neighborhoods such as the Lower East Side and Bedford-Stuyvesant, which the city has identified as requiring additional attention. 
+
+The data confirms the city's suspicion. Zip codes in rat mitigation zones average more than <span style="background-color: #FFFACD;">**5**</span> rat sightings a week, whereas the average per zip code is about <span style="background-color: #FFFACD;">**2**</span> sightings per week.
+
+```{r}
+# Define mitigation ZIP codes
+mitigation_zips <- c(10451, 10456, 10457, 10035, 10037, 10027, 10031, 10009, 10002, 112211, 11216, 11238)
+
+avg_count_all <- complete_weekly_zip_counts_pc %>%
+  group_by(Zip) %>%
+  summarise(avg_count = mean(count, na.rm = TRUE)) %>%
+  summarise(overall_avg = mean(avg_count, na.rm = TRUE))
+
+
+avg_count_mitigation <- complete_weekly_zip_counts_pc %>%
+  filter(Zip %in% mitigation_zips) %>%
+  group_by(Zip) %>%
+  summarise(avg_count = mean(count, na.rm = TRUE)) %>%
+  summarise(mitigation_avg = mean(avg_count, na.rm = TRUE))
+
+
+plot_data <- data.frame(
+  Category = c("All ZIP Codes", "Mitigation ZIP Codes"),
+  Average_Count = c(avg_count_all$overall_avg, avg_count_mitigation$mitigation_avg)
+)
+
+ggplot(plot_data, aes(x = Category, y = Average_Count, fill = Category)) +
+  geom_bar(stat = "identity", width = 0.5, show.legend = FALSE) +
+  scale_fill_manual(values = c("All ZIP Codes" = "#A1C9F4", "Mitigation ZIP Codes" = "#FFB4A2")) + 
+  labs(
+    title = "Figure 3: Average Rat Count Per ZIP Code",
+    y = "Average Weekly Count",
+    x = ""
+  ) +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 14),
+    plot.title = element_text(hjust = 0.5),
+    axis.text.x = element_text(size = 12)
+  )
+
+```
+
+
+```{r}
+
+zip_codes <- c(10451, 10456, 10457, 10035, 10037, 10027, 10031, 10009, 10002, 112211, 11216, 11238)
+
+
+rmzdata <- complete_weekly_zip_counts_pc %>%
+  filter(Zip %in% zip_codes)
+
+
+
+model_nb_pc_zi_rmz <- glmmTMB(count ~ policy + factor(Month) + factor(Year) + (1 | Zip),
+                          ziformula = ~ policy + factor(Year),
+                          family = nbinom1, data = rmzdata)
+```
+
+```{r, fig.align='center'}
+tab_model(model_nb_pc_zi_rmz, show.zeroinf = FALSE, CSS = list(css.table = "margin-left: auto; margin-right: auto;"))
+
+```
+
+
+When focusing on zip codes in rat mitigation zones, our data contains <span style="background-color: #FFFACD;">**2398**</span> observations instead of of <span style="background-color: #FFFACD;">**88345**</span>. 
+
+Interestingly, the policy effect becomes non-significant with only a slight negative trend. This suggests that the policy's effect on reducing rats in the full dataset must primarily be driven by zip codes not in the mitigation zones. Given that the city has known that these specific zip codes have been problem areas, it is also possible that these areas had pre-existing pest control efforts that limited the policy's impact. 
+
+# Model diagonostics and discussion
+
+
+```{r}
+library(DHARMa)
+
+res_zinb <- simulateResiduals(model_nb_pc_zi)
+res_zinb_rmz <- simulateResiduals(model_nb_pc_zi_rmz)
+
+par(mfrow = c(2, 2))
+plot(res_zinb)
+plot(res_zinb_rmz)
+
+```
+\newline
+
+## Diagnostics for full data
+
+Our diagnostic plots indicate that the zero-inflated negative binomial model for the full dataset did not fully capture all patterns in the rat reporting data, suggesting that there additional sources of variation may be present. For example, it is possible that there might be a temporal autocorrelation - the count of rats a week before may have some influence on the count of rats in the current week through a sudden population outbreak or decline. Furthermore, there may even be complex spatial dynamics not accounted for in our model, as rats are free to move and unconfined to any spatial unit. This would of course violate our independence assumption. It is also possible that zip code is not fine enough a unit for modelling spacial dependencies. for To account for some of these complexities, other modelling approaches such as GEE, ARIMA, or spatial regression could be explored. 
+
+There other caveats to reiterate here as well; we are working with administrative rat sighting data, not directly measured counts of rats. Our analysis therefore focuses on reported sightings, not actual rat populations. In other words, we are not analyzing the effect of the policy rat population of New York; rather, we are analyzing the policy's effect on the number of rats reported by NYC residents. 
+
+<span style="background-color: #FFFACD;">**Nevertheless, our primary research question is estimating the policy effect; and multiple models all provide a significant negative coefficient for policy, meaning that our result is somewhat robust to different model specifications.**</span> This suggests that the policy did have an effect on decreasing rat report counts, which hopefully serves as a useful proxy for the actual rat population. 
+
+## Diagnostics for rat mitgation zone data
+
+Interestingly, when examining the model for rat mitigation zones, our qq plots improved substantially, showing a non-significant deviations from normality. Residual vs fitted plots also show better homoscedasticity. The improved diagnostics in the mitigation zones subset indicates that our model adequately captures the data-generating process within these specific areas. Within mitigation zones, the variables included in our model (policy implementation, seasonal effects, yearly trends, and zip code variations) sufficiently explain the variation in rat counts.
+
+Model diagnostics show that rat counts in rat mitigation zones follow a more predictable pattern, the model more likely to be better specified for these areas. Therefore, estimates from this subset are likely more precise and interpretable.
+
+# Conclusion
+
+This study investigates whether New York City's trash containerization policy reduced rat sightings, using a zero inflated negative binomial model on 44,908 weekly observations aacross 206 zip codes. The policy led to a 23% reduction in reported rat sightings, suggesting it had a meaningful impact on mitigating the city's rat problem. In designated rat mitigation zones, where average sightings were more than twice the citywide average, the policy effect was not significant. 
+
+Diagnostics indicate that while our full dataset model captured many patterns, unaccounted factors such as temporal autocorrelation and spatial movement of rats may introduce additional variation. Our results rely on reported rat sightings rather than actual rat population counts, meaning the policy’s effect is measured through public complaints rather than direct ecological changes. <span style="background-color: #FFFACD;">**Nonetheless, our analysis finds a statistically significant policy effect, supporting the idea that trash containerization led to fewer rat sightings. **</span> Overall, these findings suggest that the containerization policy represents a meaningful step toward reducing New York City's rat problem.
+
+# Citations
+
+Jonathan Auerbach, Does New York City Really have as Many Rats as People?, Significance, Volume 11, Issue 4, October 2014, Pages 22–27, https://doi.org/10.1111/j.1740-9713.2014.00764.x
+
+Pictures are from https://www.westsiderag.com/2024/11/11/put-a-lid-on-it-to-deter-rats-small-buildings-must-use-bins-for-trash-starting-nov-12 and https://www.latimes.com/world-nation/story/2024-11-27/new-york-city-generates-44-million-pounds-of-garbage-a-day-the-city-has-a-plan-to-contain-the-mess. 
+
+# Code
+
+```{r ref.label=knitr::all_labels(), echo=TRUE, eval=FALSE}
+```
+
